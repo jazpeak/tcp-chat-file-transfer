@@ -1,1 +1,6 @@
-repo/
+__pycache__/
+*.pyc
+server_data/
+*_data/
+.venv/
+.DS_Store
