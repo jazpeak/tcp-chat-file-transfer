@@ -1,101 +1,189 @@
-# Multi-Client Chat & File Transfer over Raw TCP
+# Secure Multi-Client Chat & File Transfer over TLS
 
-A multi-threaded client–server application in pure Python (standard library only) supporting private messaging, broadcast, server-side file storage, and relayed peer-to-peer file transfer — built on raw TCP sockets with a custom text-based application-layer protocol.
+A multi-threaded client–server system in Python supporting private messaging, broadcast, secure server storage, and relayed peer-to-peer file transfer over raw TCP sockets wrapped with **Transport Layer Security (TLS)**.
+
+This project provides a robust, secure communication system with transport-layer encryption, certificate-based server verification, salted credential storage, cryptographic file integrity checks using SHA-256 message digests, and hybrid client-to-client end-to-end encryption.
+
+---
 
 ## Features
 
-- **Concurrent clients** via a thread-per-connection server
-- **Authentication** (`LOGIN`) with duplicate-session detection
-- **Private messages** and **broadcast** to all connected users
-- **File upload / download** to a server-side store
-- **Peer-to-peer file send** relayed through the server (`SEND`)
-- **Custom protocol** with newline-terminated text commands and explicit byte-length framing for binary data ([spec](docs/PROTOCOL.md))
-- **Benchmark suite** measuring RTT, broadcast latency, and multi-client download throughput
+- **TLS Transport Encryption:** Full cryptographic transport security using Python's `ssl` module; all text commands, messages, and binary file streams are encrypted on the wire.
+- **X.509 Certificate Verification:** Server is configured with a digital certificate signed by a Certificate Authority (CA) with Subject Alternative Names (SAN); clients strictly verify certificate authenticity and hostname (`ssl.CERT_REQUIRED`), rejecting untrusted certificates.
+- **End-to-End Encryption (E2EE):** For relayed client-to-client operations (`MSG` and `SEND`), clients use hybrid **RSA-2048 + AES-256-GCM**. The server functions strictly as a relay and cannot decrypt or read private messages or files.
+- **Secure Authentication:** Passwords are pre-hashed client-side (SHA-256) prior to transmission and stored server-side with unique cryptographic salts (`os.urandom(16).hex()`).
+- **Cryptographic File Integrity:** Senders compute SHA-256 digests before file transmission; receivers recalculate digests in real-time to detect corruption or tampering.
+- **Tamper Detection Demonstration:** Automated detection and rejection of modified or corrupted files.
+- **Concurrent Clients:** Thread-per-connection architecture supporting concurrent messaging and downloads (tested with 100 KB, 1 MB, 10 MB files).
+- **Wireshark Verified:** Zero plaintext leakage; all network traffic appears as TLS Application Data records.
 
-## Tech
+---
 
-Python 3 · `socket` · `threading` · no third-party dependencies
+## Tech Stack
+
+Python 3 · `socket` · `ssl` · `threading` · `hashlib` · `cryptography` · `OpenSSL`
+
+---
 
 ## Project Structure
 
 ```
 .
+├── certs/
+│   ├── generate_certs.sh # OpenSSL script to generate CA, Server, and Client keys
+│   ├── ca.crt            # Root Certificate Authority certificate
+│   ├── ca.key            # Root CA private key
+│   ├── server.crt        # Server digital certificate (signed by CA, with SAN)
+│   ├── server.key        # Server private key
+│   ├── client.crt / .pub # OpenSSL client key pair for E2EE
+│   └── client.key        # Client private key
 ├── src/
-│   ├── server.py        # Threaded TCP server
-│   └── client.py        # Interactive client with background listener thread
+│   ├── server.py         # Multi-threaded TLS TCP server
+│   └── client.py         # Interactive TLS client with background listener & E2EE
 ├── tests/
-│   └── benchmark.py     # RTT / broadcast / throughput benchmarks
+│   └── benchmark.py      # Automated security & performance test suite
 └── docs/
-    ├── PROTOCOL.md      # Application-layer protocol specification
-    └── REPORT.md        # Design & implementation write-up
+    ├── PROTOCOL.md       # Secure application-layer protocol specification
+    └── REPORT.md         # Technical architecture & security report
 ```
+
+---
 
 ## Quick Start
 
-Run everything from the repository root.
+### 1. Generate Certificates (Open-Source OpenSSL)
+
+Sample certificates and keys are pre-generated in `certs/`. To regenerate them using OpenSSL:
 
 ```bash
-# Terminal 1 – server (listens on 127.0.0.1:5000)
-python3 src/server.py
+chmod +x certs/generate_certs.sh
+./certs/generate_certs.sh
+```
 
-# Terminal 2 and 3 – clients
+This creates:
+* A Root Certificate Authority (`certs/ca.crt`, `certs/ca.key`).
+* A Server Certificate (`certs/server.crt`, `certs/server.key`) signed by the Root CA with SAN (`DNS:localhost`, `IP:127.0.0.1`).
+* Client RSA Key Pair (`certs/client.key`, `certs/client.pub`) for End-to-End Encryption.
+
+### 2. Start the Secure Server
+
+```bash
+python3 src/server.py
+```
+*Listens on `127.0.0.1:5000` with TLS enabled.*
+
+### 3. Start Clients
+
+In separate terminal windows:
+
+```bash
 python3 src/client.py
 ```
 
-Enter any username/password when prompted (new usernames are registered on first login, e.g. `alice` / `123`).
+Enter a username and password when prompted (new usernames are automatically registered on first login).
 
-### Client commands
+#### Client Commands
 
 | Command | Description |
 |---|---|
-| `MSG <user> <text>` | Private message |
-| `BROADCAST <text>` | Message everyone else |
-| `LIST` | Show online users |
-| `UPLOAD <file>` | Upload a file to the server |
-| `DOWNLOAD <file>` | Download a file from the server |
-| `SEND <user> <file>` | Send a file to another user via the server |
-| `LOGOUT` | Disconnect |
+| `MSG <user> <text>` | Send a private encrypted message |
+| `BROADCAST <text>` | Broadcast an encrypted message to all online users |
+| `LIST` | List active users |
+| `UPLOAD <file>` | Securely upload a file with SHA-256 integrity check to server |
+| `DOWNLOAD <file>` | Download a file from server with SHA-256 verification |
+| `SEND <user> <file>` | Send a file to another client (relayed through server with integrity verification) |
+| `LOGOUT` | Disconnect gracefully |
 
-Each client gets a private folder (e.g. `alice_data/`) created on login. Place files there before using `UPLOAD`/`SEND`; downloads and received files land there too. The folder is deleted on exit.
+*Each client receives an isolated folder (e.g. `alice_data/`) created on login. Files to upload/send should be placed there; received files land there automatically.*
 
-### Benchmarks
+---
 
-With the server running:
+## Verification & Testing
+
+### Running Automated Test Suite
+
+With the server running, execute:
 
 ```bash
 python3 tests/benchmark.py
 ```
 
-Runs: (1) single-client round-trip time, (2) broadcast latency across 5 clients, (3) throughput with 10 concurrent clients downloading 1 MB, 100 MB, and 1 GB files. The 1 GB test needs ~1 GB free disk space in `server_data/`.
+The test suite automatically executes and asserts:
+1. **Single-Client RTT:** Round-trip latency over TLS.
+2. **Encrypted Broadcast Latency:** Broadcast delay across 5 concurrent clients.
+3. **Concurrent Download Throughput (10 Clients):** Transfers and verifies SHA-256 integrity for **100 KB, 1 MB, and 10 MB** files.
+4. **Authentication Security:** Verifies rejection of wrong passwords, rejection of duplicate logins, and registration with salted hashes.
+5. **Certificate Verification:** Attempts connection without CA trust and verifies that `ssl.SSLCertVerificationError` correctly rejects the untrusted certificate.
+6. **Tamper Detection Demonstration:** Uploads a test file with an altered byte stream and asserts that the server detects the digest mismatch, emits an integrity failure alert, and rejects the corrupted file.
 
-### Sample results (localhost loopback, my machine)
+### Sample Test Results (Localhost)
 
-| Test | Result |
-|---|---|
-| Single-client RTT | ~0.03 ms |
-| Broadcast to 5 clients (avg) | ~0.3 ms |
-| 10 clients × 100 MB download | ~580 MB/s aggregate |
+```
+Ensure the server is running on 127.0.0.1:5000 before running tests.
 
-Loopback numbers reflect server/threading overhead, not real network conditions; your figures will vary.
+--- Running Test 1: RTT (1 Client over TLS) ---
+RTT: 0.48 ms
 
-## How It Works
+--- Running Test 2: Broadcast to 5 Clients ---
+Average response time across 5 clients: 0.85 ms
 
-TCP is a byte stream with no message boundaries, so the protocol frames data in two ways:
+--- Running Test 3: Server Throughput (10 Clients, 100 KB) ---
+Generating test file dummy_100KB.bin (102400 bytes)...
+Total Data Transferred: 0.98 MB
+Total Duration: 1.07 seconds
+Server Throughput: 0.91 MB/s
+Verified files: 10/10 clients matched SHA-256 hash
 
-1. **Control messages** are UTF-8 text lines terminated by `\n`.
-2. **File data** is preceded by a header carrying the exact byte count; the receiver reads exactly that many bytes, then resumes parsing text.
+--- Running Test 3: Server Throughput (10 Clients, 1 MB) ---
+Generating test file dummy_1MB.bin (1048576 bytes)...
+Total Data Transferred: 10.00 MB
+Total Duration: 1.04 seconds
+Server Throughput: 9.64 MB/s
+Verified files: 10/10 clients matched SHA-256 hash
 
-Shared server state (the active-user table) is guarded by a `threading.Lock`. See [`docs/REPORT.md`](docs/REPORT.md) for the full design discussion and [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for message formats and sequence diagrams.
+--- Running Test 3: Server Throughput (10 Clients, 10 MB) ---
+Generating test file dummy_10MB.bin (10485760 bytes)...
+Total Data Transferred: 100.00 MB
+Total Duration: 1.18 seconds
+Server Throughput: 85.04 MB/s
+Verified files: 10/10 clients matched SHA-256 hash
 
-## Known Limitations / Future Work
+--- Running Test 4: Authentication Security ---
+Registration and login: OK LOGIN
+Duplicate login attempt: ERROR : User is already logged in
+Wrong password attempt: ERROR : Wrong password.
+Re-login with correct password: OK LOGIN
 
-This was built as a networking exercise, so it deliberately favors clarity over production hardening. Things I'd improve next:
+--- Running Test 5: Certificate Verification ---
+Certificate verification correctly rejected untrusted server.
 
-- **Security:** passwords are sent and stored in plaintext in memory and there is no TLS; filenames are not sanitized (path traversal risk on upload/download). Next step: TLS via `ssl`, salted password hashing, filename validation.
-- **Framing robustness:** commands are read with a single `recv()`, so two commands arriving in one segment, or a command arriving together with file bytes, can be mishandled. Next step: a buffered line reader shared by all code paths.
-- **Persistence:** users are registered in memory on first login and are lost on server restart.
-- **Concurrency model:** thread-per-connection is simple but won't scale to thousands of clients; `asyncio` or `selectors` would.
-- **Client UX:** uploads use a short `sleep` instead of waiting for the server's `OK UPLOAD_READY`; the `LIST` reply is plain lines rather than `LIST_RESULT <count>` as the spec describes.
+--- Running Test 6: File Integrity & Tamper Detection ---
+Sending UPLOAD with original hash 8fddf31e8c... but corrupted bytes...
+Server response: ERROR : File integrity check failed
+
+--- Running Test 7: End-to-End Encryption (E2EE) between Clients ---
+Decrypted message at Bob: 'Classified end-to-end secret'
+E2EE Verification Successful: Server only relayed ciphertext; Bob decrypted the secret!
+```
+
+---
+
+## Wireshark Packet Inspection Guide
+
+To verify that network traffic contains no plaintext:
+1. Open **Wireshark** and select the loopback interface (`lo` on Linux).
+2. Apply the display filter:
+   ```
+   tcp.port == 5000
+   ```
+3. Start capturing and run `python3 src/client.py` (send messages, broadcast, and transfer files).
+4. Observe the capture:
+   - Initial TCP 3-way handshake (`SYN`, `SYN-ACK`, `ACK`).
+   - TLS Handshake records (`Client Hello`, `Server Hello`, `Certificate`, `Key Exchange`).
+   - All subsequent messaging, chat text, passwords, and file transfers appear strictly as **`Application Data Protocol: TLSv1.3`** or **`TLSv1.2`**.
+   - Searching packet bytes for usernames, passwords, or file contents yields zero plaintext matches.
+
+
 
 ## Author
 
